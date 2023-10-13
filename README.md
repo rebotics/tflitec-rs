@@ -25,6 +25,8 @@ operators with symmetric quantization. See details in [this blog post][XNNPACK_q
 Implies `xnnpack`.
 * `xnnpack_qu8` - Similar to `xnnpack_qs8`, but accelerates few operators with
 asymmetric quantization. Implies `xnnpack`.
+* `flex_delegate` (enabled by default) - Compiles and links tensorflow operators.
+You can build the operators specifically for your models by passing `MODELS=<path>;<path_1>;...` env.
 
 *Note:* `xnnpack` is already enabled for iOS, but `xnnpack_qs8` and `xnnpack_qu8`
 should be enabled manually.
@@ -92,14 +94,17 @@ this step may take a few minutes. To allow reusing prebuilt library, one can set
 `NORMALIZED_TARGET` is the target triple which is [converted to uppercase and underscores][triple_normalization], 
 as in the cargo configuration environment variables. Below you can find example values for different `TARGET`s:
 
-* `TFLITEC_PREBUILT_PATH_AARCH64_APPLE_IOS=/path/to/TensorFlowLiteC.framework`
-* `TFLITEC_PREBUILT_PATH_ARMV7_LINUX_ANDROIDEABI=/path/to/libtensorflowlite_c.so`
-* `TFLITEC_PREBUILT_PATH_X86_64_APPLE_DARWIN=/path/to/libtensorflowlite_c.dylib`
-* `TFLITEC_PREBUILT_PATH_X86_64_PC_WINDOWS_MSVC=/path/to/tensorflowlite_c.dll`. **Note that**, the prebuilt `.dll` 
+* `TFLITEC_PREBUILT_PATH_AARCH64_APPLE_IOS=/path/to/`
+* `TFLITEC_PREBUILT_PATH_ARMV7_LINUX_ANDROIDEABI=/path/to/`
+* `TFLITEC_PREBUILT_PATH_X86_64_APPLE_DARWIN=/path/to/`
+* `TFLITEC_PREBUILT_PATH_X86_64_PC_WINDOWS_MSVC=/path/to/`. **Note that**, the prebuilt `.dll` 
 file must have the corresponding `.lib` file under the same directory.
 
 You can find these files under the [`OUT_DIR`][cargo documentation] after you compile the library for the first time, 
 then copy them to a persistent path and set environment variable.
+
+Example of extracting libraries using [fd](https://github.com/sharkdp/fd) utility:
+`fd -HI -e so -e dylib -e dll -e lib tensor target -x cp {} <PATH>`
 
 ## XNNPACK support
 
@@ -187,6 +192,9 @@ BINDGEN_EXTRA_CLANG_ARGS="\
 ```
 * (Recommended) [cargo-ndk] simplifies `cargo build` process. Recent version of the tool has `--bindgen` flag
 which sets `BINDGEN_EXTRA_CLANG_ARGS` variable appropriately. Hence, you can skip the step above.
+
+## IOS
+IOS is not tested and there is 100% change that it's borked
 
 ## Windows
 

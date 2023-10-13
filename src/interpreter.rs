@@ -1,6 +1,6 @@
 //! API of TensorFlow Lite [`Interpreter`] that performs inference.
-use std::ffi::c_void;
-use std::os::raw::c_int;
+use std::ffi::CString;
+use std::os::raw::{c_int, c_char, c_void};
 
 use crate::bindings::*;
 use crate::model::Model;
@@ -8,6 +8,45 @@ use crate::tensor;
 use crate::tensor::Tensor;
 use crate::{Error, ErrorKind, Result};
 use std::fmt::{Debug, Formatter};
+
+#[cfg(target_os = "android")]
+#[link(name="tensorflowlite_flex_jni")]
+extern "C" {
+    /// Create a FlexDelegate.
+    /// We import JNI symbol because Tensorflow devs decided that it would be amazing
+    /// to not compile CAPI way to create a FlexDelegate on Android
+    fn Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+        // JNI requires some java-stuff but it's not used inside the function
+        // we can safely pass null pointers
+        _env: *mut c_void,
+        _class: *mut c_void,
+    ) -> *mut TfLiteDelegate;
+
+    /// Delete the FlexDelegate
+    fn Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+        _env: *mut c_void,
+        _class: *mut c_void,
+        delegate: *mut TfLiteDelegate
+    );
+}
+
+#[cfg(
+    all(
+        not(target_os = "android"),
+        not(target_os = "windows")
+    )
+)]
+extern {
+    fn dlopen(
+        filename: *const c_char,
+        flag: c_int,
+    ) -> *mut c_void;
+}
+
+// Provide stub for iOS
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub extern "C" fn __isPlatformVersionAtLeast() -> bool { true }
 
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
@@ -65,6 +104,12 @@ pub struct Interpreter<'a> {
     /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
     #[cfg(feature = "xnnpack")]
     xnnpack_delegate_ptr: Option<*mut TfLiteDelegate>,
+
+    /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
+    #[cfg(target_os = "android")]
+    #[cfg(feature = "flex_delegate")]
+    #[allow(dead_code)]
+    flex_delegate_ptr: Option<*mut TfLiteDelegate>,
 
     /// The underlying `Model` to limit lifetime of the interpreter.
     /// See this issue for details:
@@ -125,8 +170,34 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
-            // TODO(ebraraktas): TfLiteInterpreterOptionsSetErrorReporter
+            #[cfg(target_os = "android")]
+            #[cfg(feature = "flex_delegate")]
+            let flex_delegate_ptr = Some(Interpreter::create_flex_delegate_android(options_ptr));
+
+            #[cfg(
+                all(
+                    not(target_os = "android"),
+                    not(target_os = "windows")
+                )
+            )]
+            #[cfg(feature = "flex_delegate")]
+            {
+                // TFLite uses dlsym() to dinamically load FLEX delegate
+                // we can use dlopen() with global symbols visiblity to load FLEX delegate in runtime
+
+                let flex_delegate_ptr = Some(Interpreter::create_flex_delegate(options_ptr));
+                let lib_name = CString::new("libtensorflowlite_flex.so").unwrap();
+
+                let handle = dlopen(lib_name.as_ptr(), 0x00100 | 0x00001);
+                if handle.is_null() {
+                    panic!("Failed to load FLEX library");
+                }
+            }
+
+
             let model_ptr = model.model_ptr as *const TfLiteModel;
+
+            // TODO(ebraraktas): TfLiteInterpreterOptionsSetErrorReporter
             let interpreter_ptr = TfLiteInterpreterCreate(model_ptr, options_ptr);
             TfLiteInterpreterOptionsDelete(options_ptr);
             if interpreter_ptr.is_null() {
@@ -137,6 +208,9 @@ impl<'a> Interpreter<'a> {
                     interpreter_ptr,
                     #[cfg(feature = "xnnpack")]
                     xnnpack_delegate_ptr,
+                    #[cfg(target_os = "android")]
+                    #[cfg(feature = "flex_delegate")]
+                    flex_delegate_ptr,
                     model,
                 })
             }
@@ -184,7 +258,7 @@ impl<'a> Interpreter<'a> {
         }
         unsafe {
             let tensor_ptr = TfLiteInterpreterGetInputTensor(self.interpreter_ptr, index as i32);
-            Tensor::from_raw(tensor_ptr as *mut TfLiteTensor).map_err(|error| {
+            Tensor::from_raw(tensor_ptr).map_err(|error| {
                 if error.kind() == ErrorKind::ReadTensorError {
                     Error::new(ErrorKind::AllocateTensorsRequired)
                 } else {
@@ -361,6 +435,22 @@ impl<'a> Interpreter<'a> {
         TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, xnnpack_delegate_ptr);
         xnnpack_delegate_ptr
     }
+
+    #[cfg(target_os = "android")]
+    #[cfg(feature = "flex_delegate")]
+    unsafe fn create_flex_delegate_android(
+        interpreter_options_ptr: *mut TfLiteInterpreterOptions,
+    ) -> *mut TfLiteDelegate {
+        #[allow(unused_assignments)]
+        let delegate = Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+
+        TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, delegate);
+
+        delegate
+    }
 }
 
 impl Drop for Interpreter<'_> {
@@ -372,6 +462,18 @@ impl Drop for Interpreter<'_> {
             {
                 if let Some(delegate_ptr) = self.xnnpack_delegate_ptr {
                     TfLiteXNNPackDelegateDelete(delegate_ptr)
+                }
+            }
+
+            #[cfg(target_os = "android")]
+            #[cfg(feature = "flex_delegate")]
+            {
+                if let Some(delegate_ptr) = self.flex_delegate_ptr {
+                    Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        delegate_ptr,
+                    );
                 }
             }
         }
