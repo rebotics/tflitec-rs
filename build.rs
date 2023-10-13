@@ -7,7 +7,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use indoc::{indoc, formatdoc};
-use std::io::prelude::*;
 
 const TAG: &str = "v2.14.0";
 const TF_GIT_URL: &str = "https://github.com/tensorflow/tensorflow.git";
@@ -19,7 +18,7 @@ struct BazelBuilder {
     content: String,
 
     models: Vec<String>,
-    loads: Vec<String>,
+    loads: Vec<Vec<String>>,
 
     has_flex: bool,
     has_xnnpack: bool,
@@ -33,8 +32,10 @@ impl BazelBuilder {
             has_xnnpack: false,
             content: String::new(),
             loads: vec![
-                String::from("//tensorflow/lite:build_def.bzl"),
-                String::from("tflite_cc_shared_object"),
+                vec![
+                    String::from("//tensorflow/lite:build_def.bzl"),
+                    String::from("tflite_cc_shared_object"),
+                ]
             ],
         }
     }
@@ -67,10 +68,22 @@ impl BazelBuilder {
         deps_str
     }
 
+    fn get_load_str(items: &Vec<String>) -> String {
+        let mut load_str = String::from("load(\n");
+
+        items.iter().for_each(|v| {
+            load_str.push_str(format!("\t\"{v}\",\n").as_str());
+        });
+
+        load_str.push_str(")");
+
+        load_str
+    }
+
     fn with_flex_delegate(mut self) -> Self {
         self.has_flex = true;
 
-        self.loads.extend(vec![
+        self.loads.push(vec![
             String::from("@org_tensorflow//tensorflow/lite/delegates/flex:build_def.bzl"),
             String::from("tflite_flex_shared_library"),
         ]);
@@ -119,13 +132,14 @@ impl BazelBuilder {
     }
 
     fn build(mut self) -> String {
-        let mut load_str = String::from("load(\n");
+        let mut load_sections = String::new();
 
         self.loads.iter().for_each(|v| {
-            load_str.push_str(format!("\t\"{v}\",\n").as_str());
-        });
+            let load_str = BazelBuilder::get_load_str(&v);
 
-        load_str.push_str(")");
+            load_sections.push_str(&load_str);
+            load_sections.push_str("\n\n");
+        });
 
         let mut deps = vec![
             String::from("//tensorflow/lite/c:exported_symbols.lds"),
@@ -181,7 +195,7 @@ impl BazelBuilder {
 
         self.content.push_str(&cc_shared_obj);
 
-        format!("{load_str}\n\n{}", self.content)
+        format!("{load_sections}\n\n{}", self.content)
     }
 }
 
@@ -324,15 +338,25 @@ fn prepare_tensorflow_source(tf_src_path: &Path) {
         println!("Clone took {:?}", Instant::now() - start);
     }
 
-    #[cfg(feature = "xnnpack")]
-    {
-        let root = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-        let bazel_build_path = root.join("build-res/tflitec_with_xnnpack_BUILD.bazel");
-        let target = tf_src_path.join("tensorflow/lite/c/tmp/BUILD");
+    let root = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let target = tf_src_path.join("tensorflow/lite/c/tmp/BUILD");
 
-        std::fs::create_dir_all(target.parent().unwrap()).expect("Cannot create tmp directory");
-        std::fs::copy(bazel_build_path, target).expect("Cannot copy temporary BUILD file");
-    }
+    // TODO: Add passing models
+    let builder = BazelBuilder::new(vec![]);
+
+    #[cfg(feature = "flex_delegate")]
+    let builder = builder.with_flex_delegate();
+    #[cfg(feature = "xnnpack")]
+    let builder = builder.with_xnnpack();
+
+    let build_data = builder.build();
+
+    std::fs::create_dir_all(target.parent().unwrap()).expect("Cannot create tmp directory");
+
+    let mut f = File::create(&target).expect(
+        "Failed to create BUILD file"
+    );
+    f.write_all(build_data.as_bytes()).unwrap();
 }
 
 fn check_and_set_envs() {
@@ -397,24 +421,22 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
     let target_os = target_os();
     let bazel_output_path_buf;
     let bazel_target;
+    let bazel_flex_target;
+
     if target_os != "ios" {
         let ext = dll_extension();
-        let sub_directory = if cfg!(feature = "xnnpack") {
-            "/tmp"
-        } else {
-            ""
-        };
-        let mut lib_out_dir = PathBuf::from(tf_src_path)
+
+        let lib_out_dir = PathBuf::from(tf_src_path)
             .join("bazel-bin")
             .join("tensorflow")
             .join("lite")
-            .join("c");
-        if !sub_directory.is_empty() {
-            lib_out_dir = lib_out_dir.join(&sub_directory[1..]);
-        }
+            .join("c")
+            .join("tmp");
+
         let lib_prefix = dll_prefix();
         bazel_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_c.{}", lib_prefix, ext));
-        bazel_target = format!("//tensorflow/lite/c{}:tensorflowlite_c", sub_directory);
+        bazel_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_c");
+        bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
     } else {
         bazel_output_path_buf = PathBuf::from(tf_src_path)
             .join("bazel-bin")
@@ -423,6 +445,7 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
             .join("ios")
             .join("TensorFlowLiteC_framework.zip");
         bazel_target = String::from("//tensorflow/lite/ios:TensorFlowLiteC_framework");
+        bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
     };
 
     let python_bin_path = env::var("PYTHON_BIN_PATH").expect("Cannot read PYTHON_BIN_PATH");
@@ -435,22 +458,27 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
     {
         panic!("Cannot configure tensorflow")
     }
-    let mut bazel = std::process::Command::new("bazel");
+    let mut bazel_lib = std::process::Command::new("bazel");
+    let mut bazel_flex = std::process::Command::new("bazel");
     {
         // Set bazel outputBase under OUT_DIR
         let bazel_output_base_path = out_dir().join(format!("tensorflow_{}_output_base", TAG));
-        bazel.arg(format!(
-            "--output_base={}",
-            bazel_output_base_path.to_str().unwrap()
-        ));
+        let out = bazel_output_base_path.to_str().unwrap();
+
+        bazel_lib.arg(format!("--output_base={out}"));
+        bazel_flex.arg(format!("--output_base={out}"));
     }
-    bazel.arg("build").arg("-c").arg("opt");
+
+    bazel_lib.arg("build").arg("-c").arg("opt");
+
+    bazel_flex.arg("build").arg("-c").arg("opt");
+    bazel_flex.arg("--cxxopt=--std=c++17");
 
     // Configure XNNPACK flags
     // In r2.6, it is enabled for some OS such as Windows by default.
     // To enable it by feature flag, we disable it by default on all platforms.
     #[cfg(not(feature = "xnnpack"))]
-    bazel.arg("--define").arg("tflite_with_xnnpack=false");
+    bazel_lib.arg("--define").arg("tflite_with_xnnpack=false");
     #[cfg(any(feature = "xnnpack_qu8", feature = "xnnpack_qs8"))]
     bazel.arg("--define").arg("tflite_with_xnnpack=true");
     #[cfg(feature = "xnnpack_qs8")]
@@ -458,25 +486,59 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
     #[cfg(feature = "xnnpack_qu8")]
     bazel.arg("--define").arg("xnn_enable_qu8=true");
 
-    bazel
+    bazel_lib
         .arg(format!("--config={}", config))
         .arg(bazel_target)
+        .current_dir(tf_src_path);
+
+    bazel_flex
+        .arg(format!("--config={}", config))
+        .arg("--config=monolithic")
+        .arg("--host_crosstool_top=@bazel_tools//tools/cpp:toolchain")
+        .arg(bazel_flex_target)
         .current_dir(tf_src_path);
 
     if let Some(copts) = get_target_dependent_env_var(BAZEL_COPTS_ENV_VAR) {
         let copts = copts.split_ascii_whitespace();
         for opt in copts {
-            bazel.arg(format!("--copt={}", opt));
+            bazel_lib.arg(format!("--copt={}", opt));
         }
     }
 
     if target_os == "ios" {
-        bazel.args(["--apple_bitcode=embedded", "--copt=-fembed-bitcode"]);
+        bazel_lib.args(["--apple_bitcode=embedded", "--copt=-fembed-bitcode"]);
     }
-    println!("Bazel Build Command: {:?}", bazel);
-    if !bazel.status().expect("Cannot execute bazel").success() {
+    println!("Bazel Lib Build Command: {:?}", bazel_lib);
+    println!("Bazel Flex Build Command: {:?}", bazel_flex);
+
+    #[cfg(feature = "flex_delegate")]
+    {
+        let mut sed = std::process::Command::new("sed");
+
+        // New versions of compilers do not tolerate the absence of the
+        // required imports, we have to add it manulally
+        let fix_path = PathBuf::from(tf_src_path)
+            .join("tensorflow")
+            .join("tsl")
+            .join("lib")
+            .join("io")
+            .join("cache.h");
+
+        sed.arg("-i").arg("18s/.*/#include <cstdint>/").arg(fix_path.to_str().unwrap());
+
+        if !sed.status().unwrap().success() {
+            panic!("Failed to execute 'sed'");
+        }
+
+        if !bazel_flex.status().expect("Cannot execute bazel").success() {
+            panic!("Cannot build Flex Delegate");
+        }
+    }
+
+    if !bazel_lib.status().expect("Cannot execute bazel").success() {
         panic!("Cannot build TensorFlowLiteC");
     }
+
     if !bazel_output_path_buf.exists() {
         panic!(
             "Library/Framework not found in {}",
@@ -685,7 +747,6 @@ fn main() {
         _ => arch,
     };
     if os != "ios" {
-        println!("Path: {}", out_path.display());
         println!("cargo:rustc-link-search=native={}", out_path.display());
         println!("cargo:rustc-link-lib=dylib=tensorflowlite_c");
     } else {
