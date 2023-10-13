@@ -2,15 +2,188 @@ extern crate bindgen;
 
 use std::env;
 use std::fmt::Debug;
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use indoc::{indoc, formatdoc};
+use std::io::prelude::*;
 
 const TAG: &str = "v2.14.0";
 const TF_GIT_URL: &str = "https://github.com/tensorflow/tensorflow.git";
 const BAZEL_COPTS_ENV_VAR: &str = "TFLITEC_BAZEL_COPTS";
 const PREBUILT_PATH_ENV_VAR: &str = "TFLITEC_PREBUILT_PATH";
 const HEADER_DIR_ENV_VAR: &str = "TFLITEC_HEADER_DIR";
+
+struct BazelBuilder {
+    content: String,
+
+    models: Vec<String>,
+    loads: Vec<String>,
+
+    has_flex: bool,
+    has_xnnpack: bool,
+}
+
+impl BazelBuilder {
+    fn new(models: Vec<String>) -> Self {
+        BazelBuilder {
+            models,
+            has_flex: false,
+            has_xnnpack: false,
+            content: String::new(),
+            loads: vec![
+                String::from("//tensorflow/lite:build_def.bzl"),
+                String::from("tflite_cc_shared_object"),
+            ],
+        }
+    }
+
+    fn get_models_str(&self) -> String {
+        let mut models_str = String::new();
+        if !self.models.is_empty() {
+            models_str.push_str("models = [\n");
+
+            self.models.iter().for_each(|v| {
+                models_str.push_str(format!("\t\t\"{v}\",\n").as_str());
+            });
+
+            models_str.push_str("\t],");
+        }
+
+        models_str
+    }
+
+    fn get_deps_str(items: &Vec<String>) -> String {
+        let mut deps_str = String::new();
+        deps_str.push_str("deps = [\n");
+
+        items.iter().for_each(|v| {
+            deps_str.push_str(format!("\t\t\"{v}\",\n").as_str());
+        });
+
+        deps_str.push_str("\t],");
+
+        deps_str
+    }
+
+    fn with_flex_delegate(mut self) -> Self {
+        self.has_flex = true;
+
+        self.loads.extend(vec![
+            String::from("@org_tensorflow//tensorflow/lite/delegates/flex:build_def.bzl"),
+            String::from("tflite_flex_shared_library"),
+        ]);
+
+        let models_str = self.get_models_str();
+        let flex_shared_obj = formatdoc! {r#"
+
+            tflite_flex_shared_library(
+                name = "tensorflowlite_flex",
+                {models_str}
+            )
+
+            cc_library(
+                name="libflex",
+                srcs = ["libtensorflowlite_flex.so"],
+                visibility = ["//visibility:public"]
+            )
+        "#};
+
+        self.content.push_str(flex_shared_obj.as_str());
+
+        self
+    }
+
+    fn with_xnnpack(mut self) -> Self {
+        self.has_xnnpack = true;
+
+        let xnnpack_lib = indoc! {r#"
+
+            cc_library(
+                name = "c_api_with_xnn_pack",
+                hdrs = ["//tensorflow/lite/c:c_api.h",
+                        "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate.h"],
+                copts = tflite_copts(),
+                deps = [
+                    "//tensorflow/lite/c:c_api",
+                    "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate"
+                ],
+                alwayslink = 1,
+            )
+        "#};
+
+        self.content.push_str(xnnpack_lib);
+
+        self
+    }
+
+    fn build(mut self) -> String {
+        let mut load_str = String::from("load(\n");
+
+        self.loads.iter().for_each(|v| {
+            load_str.push_str(format!("\t\"{v}\",\n").as_str());
+        });
+
+        load_str.push_str(")");
+
+        let mut deps = vec![
+            String::from("//tensorflow/lite/c:exported_symbols.lds"),
+            String::from("//tensorflow/lite/c:version_script.lds"),
+        ];
+
+        if self.has_flex {
+            deps.push(String::from(":libflex"));
+        }
+
+        if self.has_xnnpack {
+            deps.push(String::from(":c_api_with_xnn_pack"));
+        }
+
+        let libc = if !self.models.is_empty() {
+            let models_str = self.get_models_str();
+
+            deps.push(":c_lib".to_string());
+
+            formatdoc!{r#"
+                tflite_custom_c_library(
+                    name = "c_lib",
+                    {models_str}
+                )
+
+            "#}
+        } else { String::new() };
+
+        let deps_str = BazelBuilder::get_deps_str(&deps);
+
+        let cc_shared_obj = formatdoc! {r#"
+
+            {libc}
+            tflite_cc_shared_object(
+                name = "tensorflowlite_c",
+                linkopts = select({{
+                    "//tensorflow:ios": [
+                        "-Wl,-exported_symbols_list,$(location //tensorflow/lite/c:exported_symbols.lds)",
+                    ],
+                    "//tensorflow:macos": [
+                        "-Wl,-exported_symbols_list,$(location //tensorflow/lite/c:exported_symbols.lds)",
+                    ],
+                    "//tensorflow:windows": [],
+                    "//conditions:default": [
+                        "-z defs",
+                        "-Wl,--version-script,$(location //tensorflow/lite/c:version_script.lds)",
+                    ],
+                }}),
+                per_os_targets = True,
+                {deps_str}
+            )
+        "#};
+
+        self.content.push_str(&cc_shared_obj);
+
+        format!("{load_str}\n\n{}", self.content)
+    }
+}
 
 fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").expect("Unable to get TARGET_OS")
@@ -156,6 +329,7 @@ fn prepare_tensorflow_source(tf_src_path: &Path) {
         let root = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let bazel_build_path = root.join("build-res/tflitec_with_xnnpack_BUILD.bazel");
         let target = tf_src_path.join("tensorflow/lite/c/tmp/BUILD");
+
         std::fs::create_dir_all(target.parent().unwrap()).expect("Cannot create tmp directory");
         std::fs::copy(bazel_build_path, target).expect("Cannot copy temporary BUILD file");
     }
@@ -391,7 +565,7 @@ fn generate_bindings(tf_src_path: PathBuf) {
 }
 
 fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path, lib_output_path: &PathBuf) {
-    // Copy prebuilt library to given path
+    // Copy prebuilt libraries to given path
     {
         let prebuilt_tflitec_path = PathBuf::from(prebuilt_tflitec_path);
         // Copy .{so,dylib,dll,Framework} file
