@@ -25,6 +25,8 @@ operators with symmetric quantization. See details in [this blog post][XNNPACK_q
 Implies `xnnpack`.
 * `xnnpack_qu8` - Similar to `xnnpack_qs8`, but accelerates few operators with
 asymmetric quantization. Implies `xnnpack`.
+* `flex_delegate (enabled by default) - Compiles and links tensorflow operators.
+You can build the operators specifically for your models by passing `MODELS=<path>;<path_1>;...` env.
 
 *Note:* `xnnpack` is already enabled for iOS, but `xnnpack_qs8` and `xnnpack_qu8`
 should be enabled manually.
