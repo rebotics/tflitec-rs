@@ -221,6 +221,7 @@ fn dll_prefix() -> &'static str {
 fn copy_or_overwrite<P: AsRef<Path> + Debug, Q: AsRef<Path> + Debug>(src: P, dest: Q) {
     let src_path: &Path = src.as_ref();
     let dest_path: &Path = dest.as_ref();
+
     if dest_path.exists() {
         if dest_path.is_file() {
             std::fs::remove_file(dest_path).expect("Cannot remove file");
@@ -228,6 +229,7 @@ fn copy_or_overwrite<P: AsRef<Path> + Debug, Q: AsRef<Path> + Debug>(src: P, des
             std::fs::remove_dir_all(dest_path).expect("Cannot remove directory");
         }
     }
+
     if src_path.is_dir() {
         let options = fs_extra::dir::CopyOptions {
             copy_inside: true,
@@ -407,12 +409,33 @@ fn check_and_set_envs() {
     }
 }
 
+fn get_lib_name() -> String {
+    let ext = dll_extension();
+    let lib_prefix = dll_prefix();
+
+    format!("{}tensorflowlite_c.{}", lib_prefix, ext)
+}
+
+fn get_flex_name() -> String {
+    let ext = dll_extension();
+    let lib_prefix = dll_prefix();
+
+    format!("{}tensorflowlite_flex.{}", lib_prefix, ext)
+}
+
 fn lib_output_path() -> PathBuf {
     if target_os() != "ios" {
-        let ext = dll_extension();
-        let lib_prefix = dll_prefix();
-        out_dir().join(format!("{}tensorflowlite_c.{}", lib_prefix, ext))
+        out_dir().join(get_lib_name())
     } else {
+        out_dir().join("TensorFlowLiteC.framework")
+    }
+}
+
+fn flex_output_path() -> PathBuf {
+    if target_os() != "ios" {
+        out_dir().join(get_flex_name())
+    } else {
+        // TODO: Change?
         out_dir().join("TensorFlowLiteC.framework")
     }
 }
@@ -626,23 +649,43 @@ fn generate_bindings(tf_src_path: PathBuf) {
         .expect("Couldn't write bindings!");
 }
 
-fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path, lib_output_path: &PathBuf) {
+fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path) {
     // Copy prebuilt libraries to given path
     {
         let prebuilt_tflitec_path = PathBuf::from(prebuilt_tflitec_path);
         // Copy .{so,dylib,dll,Framework} file
-        copy_or_overwrite(&prebuilt_tflitec_path, lib_output_path);
+
+        let mut lib_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_lib_name());
+        let mut lib_output_path = lib_output_path();
+
+        copy_or_overwrite(&lib_src_path, &lib_output_path);
+
+        #[cfg(feature = "flex_delegate")] {
+            let mut flex_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_lib_name());
+            let mut flex_output_path = flex_output_path();
+
+            copy_or_overwrite(&flex_src_path, &flex_output_path);
+
+            if target_os() == "windows" {
+                flex_src_path.set_extension("lib");
+                if !lib_src_path.exists() {
+                    panic!("A prebuilt windows .dll file must have the corresponding .lib file under the same directory!")
+                }
+
+                flex_output_path.set_extension("lib");
+                copy_or_overwrite(flex_src_path, flex_output_path);
+            }
+        }
 
         if target_os() == "windows" {
             // Copy .lib file
-            let mut prebuilt_lib_path = prebuilt_tflitec_path;
-            prebuilt_lib_path.set_extension("lib");
-            if !prebuilt_lib_path.exists() {
+            lib_src_path.set_extension("lib");
+            if !lib_src_path.exists() {
                 panic!("A prebuilt windows .dll file must have the corresponding .lib file under the same directory!")
             }
-            let mut lib_file_path = lib_output_path.clone();
-            lib_file_path.set_extension("lib");
-            copy_or_overwrite(prebuilt_lib_path, lib_file_path);
+
+            lib_output_path.set_extension("lib");
+            copy_or_overwrite(lib_src_path, lib_output_path);
         }
     }
 
@@ -758,10 +801,9 @@ fn main() {
         prepare_for_docsrs();
     } else {
         let tf_src_path = out_path.join(format!("tensorflow_{}", TAG));
-        let lib_output_path = lib_output_path();
 
         if let Some(prebuilt_tflitec_path) = get_target_dependent_env_var(PREBUILT_PATH_ENV_VAR) {
-            install_prebuilt(&prebuilt_tflitec_path, &tf_src_path, &lib_output_path);
+            install_prebuilt(&prebuilt_tflitec_path, &tf_src_path);
         } else {
             // Build from source
             check_and_set_envs();
@@ -771,11 +813,11 @@ fn main() {
             } else {
                 os
             };
-            build_tensorflow_with_bazel(
-                tf_src_path.to_str().unwrap(),
-                &config,
-                lib_output_path.as_path(),
-            );
+            // build_tensorflow_with_bazel(
+            //     tf_src_path.to_str().unwrap(),
+            //     &config,
+            //     lib_output_path.as_path(),
+            // );
         }
 
         // Generate bindings using headers
