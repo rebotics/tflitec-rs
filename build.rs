@@ -340,7 +340,6 @@ fn prepare_tensorflow_source(tf_src_path: &Path) {
         println!("Clone took {:?}", Instant::now() - start);
     }
 
-    let root = std::path::PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let target = tf_src_path.join("tensorflow/lite/c/tmp/BUILD");
 
     // TODO: Add passing models
@@ -801,13 +800,13 @@ fn main() {
         prepare_for_docsrs();
     } else {
         let tf_src_path = out_path.join(format!("tensorflow_{}", TAG));
+        prepare_tensorflow_source(tf_src_path.as_path());
 
         if let Some(prebuilt_tflitec_path) = get_target_dependent_env_var(PREBUILT_PATH_ENV_VAR) {
             install_prebuilt(&prebuilt_tflitec_path, &tf_src_path);
         } else {
             // Build from source
             check_and_set_envs();
-            prepare_tensorflow_source(tf_src_path.as_path());
             let config = if os == "android" || os == "ios" || (os == "macos" && arch == "arm64") {
                 format!("{}_{}", os, arch)
             } else {
