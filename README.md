@@ -193,6 +193,9 @@ BINDGEN_EXTRA_CLANG_ARGS="\
 * (Recommended) [cargo-ndk] simplifies `cargo build` process. Recent version of the tool has `--bindgen` flag
 which sets `BINDGEN_EXTRA_CLANG_ARGS` variable appropriately. Hence, you can skip the step above.
 
+## IOS
+IOS is not tested and there is 100% change that it's borked
+
 ## Windows
 
 Windows support is experimental. It is tested on Windows 10. You should follow instructions in

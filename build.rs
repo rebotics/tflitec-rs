@@ -439,9 +439,12 @@ fn flex_output_path() -> PathBuf {
     }
 }
 
-fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path: &Path) {
+fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str) {
     let target_os = target_os();
-    let bazel_output_path_buf;
+
+    let mut bazel_lib_output_path_buf;
+    let mut bazel_flex_output_path_buf;
+
     let bazel_target;
     let bazel_flex_target;
 
@@ -456,16 +459,29 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
             .join("tmp");
 
         let lib_prefix = dll_prefix();
-        bazel_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_c.{}", lib_prefix, ext));
+
+        bazel_lib_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_c.{}", lib_prefix, ext));
+        bazel_flex_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_flex.{}", lib_prefix, ext));
+
         bazel_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_c");
         bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
     } else {
-        bazel_output_path_buf = PathBuf::from(tf_src_path)
+        let lib_out_dir = PathBuf::from(tf_src_path)
+            .join("bazel-bin")
+            .join("tensorflow")
+            .join("lite")
+            .join("c")
+            .join("tmp");
+
+        bazel_lib_output_path_buf = PathBuf::from(tf_src_path)
             .join("bazel-bin")
             .join("tensorflow")
             .join("lite")
             .join("ios")
             .join("TensorFlowLiteC_framework.zip");
+
+        bazel_flex_output_path_buf = lib_out_dir.join("libtensorflowlite_flex.dylib");
+
         bazel_target = String::from("//tensorflow/lite/ios:TensorFlowLiteC_framework");
         bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
     };
@@ -561,32 +577,46 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str, lib_output_path:
         panic!("Cannot build TensorFlowLiteC");
     }
 
-    if !bazel_output_path_buf.exists() {
+    if !bazel_lib_output_path_buf.exists() {
         panic!(
             "Library/Framework not found in {}",
-            bazel_output_path_buf.display()
+            bazel_lib_output_path_buf.display()
         )
     }
+
+    let lib_out_path = lib_output_path();
+    let flex_out_path = flex_output_path();
+
     if target_os != "ios" {
-        copy_or_overwrite(&bazel_output_path_buf, lib_output_path);
+        copy_or_overwrite(&bazel_lib_output_path_buf, &lib_out_path);
+        #[cfg(feature = "flex_delegate")]
+        copy_or_overwrite(&bazel_flex_output_path_buf, &flex_out_path);
+
         if target_os == "windows" {
-            let mut bazel_output_winlib_path_buf = bazel_output_path_buf;
-            bazel_output_winlib_path_buf.set_extension("dll.if.lib");
-            let winlib_output_path_buf = out_dir().join("tensorflowlite_c.lib");
-            copy_or_overwrite(bazel_output_winlib_path_buf, winlib_output_path_buf);
+            bazel_lib_output_path_buf.set_extension("dll.if.lib");
+            let winlib_path = out_dir().join("tensorflowlite_c.lib");
+
+            copy_or_overwrite(&bazel_lib_output_path_buf, winlib_path);
+
+            #[cfg(feature = "flex_delegate")] {
+                bazel_flex_output_path_buf.set_extension("dll.if.lib");
+                let winlib_path = out_dir().join("tensorflowlite_flex.lib");
+
+                copy_or_overwrite(&bazel_flex_output_path_buf, winlib_path);
+            }
         }
     } else {
-        if lib_output_path.exists() {
-            std::fs::remove_dir_all(lib_output_path).unwrap();
-        }
-        let mut unzip = std::process::Command::new("unzip");
-        unzip.args([
-            "-q",
-            bazel_output_path_buf.to_str().unwrap(),
-            "-d",
-            out_dir().to_str().unwrap(),
-        ]);
-        unzip.status().expect("Cannot execute unzip");
+        // if lib_output_path.exists() {
+        //     std::fs::remove_dir_all(lib_output_path).unwrap();
+        // }
+        // let mut unzip = std::process::Command::new("unzip");
+        // unzip.args([
+        //     "-q",
+        //     bazel_lib_output_path_buf.to_str().unwrap(),
+        //     "-d",
+        //     out_dir().to_str().unwrap(),
+        // ]);
+        // unzip.status().expect("Cannot execute unzip");
     }
 }
 
@@ -660,7 +690,7 @@ fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path) {
         copy_or_overwrite(&lib_src_path, &lib_output_path);
 
         #[cfg(feature = "flex_delegate")] {
-            let mut flex_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_lib_name());
+            let mut flex_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_flex_name());
             let mut flex_output_path = flex_output_path();
 
             copy_or_overwrite(&flex_src_path, &flex_output_path);
@@ -812,11 +842,10 @@ fn main() {
             } else {
                 os
             };
-            // build_tensorflow_with_bazel(
-            //     tf_src_path.to_str().unwrap(),
-            //     &config,
-            //     lib_output_path.as_path(),
-            // );
+            build_tensorflow_with_bazel(
+                tf_src_path.to_str().unwrap(),
+                &config,
+            );
         }
 
         // Generate bindings using headers
