@@ -412,14 +412,14 @@ fn get_lib_name() -> String {
     let ext = dll_extension();
     let lib_prefix = dll_prefix();
 
-    format!("{}tensorflowlite_c.{}", lib_prefix, ext)
+    format!("{}tensorflowlite_jni.{}", lib_prefix, ext)
 }
 
 fn get_flex_name() -> String {
     let ext = dll_extension();
     let lib_prefix = dll_prefix();
 
-    format!("{}tensorflowlite_flex.{}", lib_prefix, ext)
+    format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext)
 }
 
 fn lib_output_path() -> PathBuf {
@@ -460,8 +460,8 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str) {
 
         let lib_prefix = dll_prefix();
 
-        bazel_lib_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_c.{}", lib_prefix, ext));
-        bazel_flex_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_flex.{}", lib_prefix, ext));
+        bazel_lib_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_jni.{}", lib_prefix, ext));
+        bazel_flex_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext));
 
         bazel_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_c");
         bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
@@ -820,7 +820,8 @@ fn main() {
     };
     if os != "ios" {
         println!("cargo:rustc-link-search=native={}", out_path.display());
-        println!("cargo:rustc-link-lib=dylib=tensorflowlite_c");
+        println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex_jni");
+        println!("cargo:rustc-link-lib=dylib=tensorflowlite_jni");
     } else {
         println!("cargo:rustc-link-search=framework={}", out_path.display());
         println!("cargo:rustc-link-lib=framework=TensorFlowLiteC");
@@ -842,10 +843,10 @@ fn main() {
             } else {
                 os
             };
-            build_tensorflow_with_bazel(
-                tf_src_path.to_str().unwrap(),
-                &config,
-            );
+            // build_tensorflow_with_bazel(
+            //     tf_src_path.to_str().unwrap(),
+            //     &config,
+            // );
         }
 
         // Generate bindings using headers

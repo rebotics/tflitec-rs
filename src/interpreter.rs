@@ -9,6 +9,27 @@ use crate::tensor::Tensor;
 use crate::{Error, ErrorKind, Result};
 use std::fmt::{Debug, Formatter};
 
+//#[cfg(target_os = "android")]
+#[link(name="tensorflowlite_flex_jni")]
+extern "C" {
+    /// Create a FlexDelegate.
+    /// We import JNI symbol because Tensorflow devs decided that it would be amazing
+    /// to not compile CAPI way to create a FlexDelegate on Android
+    fn Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+        // JNI requires some java-stuff but it's not used inside the function
+        // we can safely pass null pointers
+        _env: *mut c_void,
+        _class: *mut c_void,
+    ) -> *mut TfLiteDelegate;
+
+    /// Delete the FlexDelegate
+    fn Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+        _env: *mut c_void,
+        _class: *mut c_void,
+        delegate: *mut TfLiteDelegate
+    );
+}
+
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
 pub struct Options {
@@ -65,6 +86,10 @@ pub struct Interpreter<'a> {
     /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
     #[cfg(feature = "xnnpack")]
     xnnpack_delegate_ptr: Option<*mut TfLiteDelegate>,
+
+    /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
+    #[cfg(feature = "flex_delegate")]
+    flex_delegate_ptr: Option<*mut TfLiteDelegate>,
 
     /// The underlying `Model` to limit lifetime of the interpreter.
     /// See this issue for details:
@@ -125,6 +150,9 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
+            #[cfg(feature = "flex_delegate")]
+            let flex_delegate_ptr = Some(Interpreter::create_flex_delegate(options_ptr));
+
             // TODO(ebraraktas): TfLiteInterpreterOptionsSetErrorReporter
             let model_ptr = model.model_ptr as *const TfLiteModel;
             let interpreter_ptr = TfLiteInterpreterCreate(model_ptr, options_ptr);
@@ -137,6 +165,8 @@ impl<'a> Interpreter<'a> {
                     interpreter_ptr,
                     #[cfg(feature = "xnnpack")]
                     xnnpack_delegate_ptr,
+                    #[cfg(feature = "flex_delegate")]
+                    flex_delegate_ptr,
                     model,
                 })
             }
@@ -361,6 +391,20 @@ impl<'a> Interpreter<'a> {
         TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, xnnpack_delegate_ptr);
         xnnpack_delegate_ptr
     }
+
+    #[cfg(feature = "flex_delegate")]
+    unsafe fn create_flex_delegate(
+        interpreter_options_ptr: *mut TfLiteInterpreterOptions,
+    ) -> *mut TfLiteDelegate {
+        let delegate = Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+
+        TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, delegate);
+
+        delegate
+    }
 }
 
 impl Drop for Interpreter<'_> {
@@ -372,6 +416,17 @@ impl Drop for Interpreter<'_> {
             {
                 if let Some(delegate_ptr) = self.xnnpack_delegate_ptr {
                     TfLiteXNNPackDelegateDelete(delegate_ptr)
+                }
+            }
+
+            #[cfg(feature = "flex_delegate")]
+            {
+                if let Some(delegate_ptr) = self.flex_delegate_ptr {
+                    Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        delegate_ptr,
+                    );
                 }
             }
         }
