@@ -412,14 +412,28 @@ fn get_lib_name() -> String {
     let ext = dll_extension();
     let lib_prefix = dll_prefix();
 
-    format!("{}tensorflowlite_jni.{}", lib_prefix, ext)
+    match target_os().as_str() {
+        "android" => {
+            format!("{}tensorflowlite_jni.{}", lib_prefix, ext)
+        },
+        _ => {
+            format!("{}tensorflowlite_c.{}", lib_prefix, ext)
+        }
+    }
 }
 
 fn get_flex_name() -> String {
     let ext = dll_extension();
     let lib_prefix = dll_prefix();
 
-    format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext)
+    match target_os().as_str() {
+        "android" => {
+            format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext)
+        },
+        _ => {
+            format!("{}tensorflowlite_flex.{}", lib_prefix, ext)
+        }
+    }
 }
 
 fn lib_output_path() -> PathBuf {
@@ -434,8 +448,7 @@ fn flex_output_path() -> PathBuf {
     if target_os() != "ios" {
         out_dir().join(get_flex_name())
     } else {
-        // TODO: Change?
-        out_dir().join("TensorFlowLiteC.framework")
+        out_dir().join("TensorFlowLiteSelectTfOps.framework")
     }
 }
 
@@ -589,6 +602,7 @@ fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str) {
 
     if target_os != "ios" {
         copy_or_overwrite(&bazel_lib_output_path_buf, &lib_out_path);
+
         #[cfg(feature = "flex_delegate")]
         copy_or_overwrite(&bazel_flex_output_path_buf, &flex_out_path);
 
@@ -818,14 +832,30 @@ fn main() {
         }
         _ => arch,
     };
-    if os != "ios" {
-        println!("cargo:rustc-link-search=native={}", out_path.display());
-        println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex_jni");
-        println!("cargo:rustc-link-lib=dylib=tensorflowlite_jni");
-    } else {
-        println!("cargo:rustc-link-search=framework={}", out_path.display());
-        println!("cargo:rustc-link-lib=framework=TensorFlowLiteC");
+    match os.as_str() {
+        "android" => {
+            println!("cargo:rustc-link-search=native={}", out_path.display());
+            println!("cargo:rustc-link-search=dylib=tensorflowlite_jni");
+
+            #[cfg(feature = "flex_delegate")]
+            println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex_jni");
+        }
+        "ios" => {
+            println!("cargo:rustc-link-search=framework={}", out_path.display());
+            println!("cargo:rustc-link-lib=framework=TensorFlowLiteC");
+
+            #[cfg(feature = "flex_delegate")]
+            println!("cargo:rustc-link-lib=framework=TensorFlowLiteSelectTfOps");
+        }
+        _ => {
+            println!("cargo:rustc-link-search=native={}", out_path.display());
+            println!("cargo:rustc-link-search=dylib=tensorflowlite_c");
+
+            #[cfg(feature = "flex_delegate")]
+            println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex");
+        }
     }
+
     if env::var("DOCS_RS") == Ok(String::from("1")) {
         // docs.rs cannot access to network, use resource files
         prepare_for_docsrs();
@@ -833,6 +863,7 @@ fn main() {
         let tf_src_path = out_path.join(format!("tensorflow_{}", TAG));
         prepare_tensorflow_source(tf_src_path.as_path());
 
+        // TODO: Implement autodownload of already prebuilt packages
         if let Some(prebuilt_tflitec_path) = get_target_dependent_env_var(PREBUILT_PATH_ENV_VAR) {
             install_prebuilt(&prebuilt_tflitec_path, &tf_src_path);
         } else {

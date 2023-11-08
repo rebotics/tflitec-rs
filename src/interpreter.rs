@@ -9,7 +9,7 @@ use crate::tensor::Tensor;
 use crate::{Error, ErrorKind, Result};
 use std::fmt::{Debug, Formatter};
 
-//#[cfg(target_os = "android")]
+#[cfg(target_os = "android")]
 #[link(name="tensorflowlite_flex_jni")]
 extern "C" {
     /// Create a FlexDelegate.
@@ -29,6 +29,7 @@ extern "C" {
         delegate: *mut TfLiteDelegate
     );
 }
+
 
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
@@ -396,10 +397,17 @@ impl<'a> Interpreter<'a> {
     unsafe fn create_flex_delegate(
         interpreter_options_ptr: *mut TfLiteInterpreterOptions,
     ) -> *mut TfLiteDelegate {
-        let delegate = Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
+        let delegate: Option<*mut TfLiteDelegate> = None;
+
+        #[cfg(target_os = "android")]
+        {
+            delegate = Some(Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ));
+        }
+
+        let delegate = delegate.expect("Your platform is not supported");
 
         TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, delegate);
 
