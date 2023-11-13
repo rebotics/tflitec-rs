@@ -397,7 +397,7 @@ impl<'a> Interpreter<'a> {
     unsafe fn create_flex_delegate(
         interpreter_options_ptr: *mut TfLiteInterpreterOptions,
     ) -> *mut TfLiteDelegate {
-        let delegate: Option<*mut TfLiteDelegate> = None;
+        let mut delegate: Option<*mut TfLiteDelegate> = None;
 
         #[cfg(target_os = "android")]
         {

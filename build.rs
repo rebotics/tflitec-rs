@@ -1,203 +1,35 @@
 extern crate bindgen;
 
+use std::fs;
 use std::env;
 use std::fmt::Debug;
-use std::fs::File;
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
-use indoc::{indoc, formatdoc};
 
-const TAG: &str = "v2.14.0";
+use const_format::formatcp;
+
+const TF_VER: &str = "2.14.0";
+
+const TAG: &str = formatcp!("v{TF_VER}");
 const TF_GIT_URL: &str = "https://github.com/tensorflow/tensorflow.git";
-const BAZEL_COPTS_ENV_VAR: &str = "TFLITEC_BAZEL_COPTS";
-const PREBUILT_PATH_ENV_VAR: &str = "TFLITEC_PREBUILT_PATH";
-const HEADER_DIR_ENV_VAR: &str = "TFLITEC_HEADER_DIR";
 
-struct BazelBuilder {
-    content: String,
+const ANDROID_BIN_DOWNLOAD_URL: &str = formatcp!(
+    "https://repo1.maven.org/maven2/org/tensorflow/tensorflow-lite/{TF_VER}/tensorflow-lite-{TF_VER}.aar"
+);
+const ANDROID_BIN_FLEX_DOWNLOAD_URL: &str = formatcp!(
+    "https://repo1.maven.org/maven2/org/tensorflow/tensorflow-lite-select-tf-ops/{TF_VER}/tensorflow-lite-select-tf-ops-{TF_VER}.aar"
+);
 
-    models: Vec<String>,
-    loads: Vec<Vec<String>>,
-
-    has_flex: bool,
-    has_xnnpack: bool,
-}
-
-impl BazelBuilder {
-    fn new(models: Vec<String>) -> Self {
-        BazelBuilder {
-            models,
-            has_flex: false,
-            has_xnnpack: false,
-            content: String::new(),
-            loads: vec![
-                vec![
-                    String::from("//tensorflow/lite:build_def.bzl"),
-                    String::from("tflite_cc_shared_object"),
-                ]
-            ],
-        }
-    }
-
-    fn get_models_str(&self) -> String {
-        let mut models_str = String::new();
-        if !self.models.is_empty() {
-            models_str.push_str("models = [\n");
-
-            self.models.iter().for_each(|v| {
-                models_str.push_str(format!("\t\t\"{v}\",\n").as_str());
-            });
-
-            models_str.push_str("\t],");
-        }
-
-        models_str
-    }
-
-    fn get_deps_str(items: &Vec<String>) -> String {
-        let mut deps_str = String::new();
-        deps_str.push_str("deps = [\n");
-
-        items.iter().for_each(|v| {
-            deps_str.push_str(format!("\t\t\"{v}\",\n").as_str());
-        });
-
-        deps_str.push_str("\t],");
-
-        deps_str
-    }
-
-    fn get_load_str(items: &Vec<String>) -> String {
-        let mut load_str = String::from("load(\n");
-
-        items.iter().for_each(|v| {
-            load_str.push_str(format!("\t\"{v}\",\n").as_str());
-        });
-
-        load_str.push_str(")");
-
-        load_str
-    }
-
-    fn with_flex_delegate(mut self) -> Self {
-        self.has_flex = true;
-
-        self.loads.push(vec![
-            String::from("@org_tensorflow//tensorflow/lite/delegates/flex:build_def.bzl"),
-            String::from("tflite_flex_shared_library"),
-        ]);
-
-        let models_str = self.get_models_str();
-        let flex_shared_obj = formatdoc! {r#"
-
-            tflite_flex_shared_library(
-                name = "tensorflowlite_flex",
-                {models_str}
-            )
-
-            cc_library(
-                name="libflex",
-                srcs = ["libtensorflowlite_flex.so"],
-                visibility = ["//visibility:public"]
-            )
-        "#};
-
-        self.content.push_str(flex_shared_obj.as_str());
-
-        self
-    }
-
-    fn with_xnnpack(mut self) -> Self {
-        self.has_xnnpack = true;
-
-        let xnnpack_lib = indoc! {r#"
-
-            cc_library(
-                name = "c_api_with_xnn_pack",
-                hdrs = ["//tensorflow/lite/c:c_api.h",
-                        "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate.h"],
-                copts = tflite_copts(),
-                deps = [
-                    "//tensorflow/lite/c:c_api",
-                    "//tensorflow/lite/delegates/xnnpack:xnnpack_delegate"
-                ],
-                alwayslink = 1,
-            )
-        "#};
-
-        self.content.push_str(xnnpack_lib);
-
-        self
-    }
-
-    fn build(mut self) -> String {
-        let mut load_sections = String::new();
-
-        self.loads.iter().for_each(|v| {
-            let load_str = BazelBuilder::get_load_str(&v);
-
-            load_sections.push_str(&load_str);
-            load_sections.push_str("\n\n");
-        });
-
-        let mut deps = vec![
-            String::from("//tensorflow/lite/c:exported_symbols.lds"),
-            String::from("//tensorflow/lite/c:version_script.lds"),
-        ];
-
-        if self.has_flex {
-            deps.push(String::from(":libflex"));
-        }
-
-        if self.has_xnnpack {
-            deps.push(String::from(":c_api_with_xnn_pack"));
-        }
-
-        let libc = if !self.models.is_empty() {
-            let models_str = self.get_models_str();
-
-            deps.push(":c_lib".to_string());
-
-            formatdoc!{r#"
-                tflite_custom_c_library(
-                    name = "c_lib",
-                    {models_str}
-                )
-
-            "#}
-        } else { String::new() };
-
-        let deps_str = BazelBuilder::get_deps_str(&deps);
-
-        let cc_shared_obj = formatdoc! {r#"
-
-            {libc}
-            tflite_cc_shared_object(
-                name = "tensorflowlite_c",
-                linkopts = select({{
-                    "//tensorflow:ios": [
-                        "-Wl,-exported_symbols_list,$(location //tensorflow/lite/c:exported_symbols.lds)",
-                    ],
-                    "//tensorflow:macos": [
-                        "-Wl,-exported_symbols_list,$(location //tensorflow/lite/c:exported_symbols.lds)",
-                    ],
-                    "//tensorflow:windows": [],
-                    "//conditions:default": [
-                        "-z defs",
-                        "-Wl,--version-script,$(location //tensorflow/lite/c:version_script.lds)",
-                    ],
-                }}),
-                per_os_targets = True,
-                {deps_str}
-            )
-        "#};
-
-        self.content.push_str(&cc_shared_obj);
-
-        format!("{load_sections}\n\n{}", self.content)
-    }
-}
+// Download URL for the iOS cannot be constucted dynamically and should be replaced manually
+// with a new release of TFLite
+const IOS_BIN_DOWNLOAD_URL: &str = formatcp!(
+    "https://dl.google.com/tflite-nightly/ios/prod/tensorflow/lite/release/ios/nightly/807/20230224-035015/TensorFlowLiteC/0.0.1-nightly.20230224/TensorFlowLiteC-0.0.1-nightly.20230224.tar.gz"
+);
+const IOS_BIN_FLEX_DOWNLOAD_URL: &str = formatcp!(
+    "https://dl.google.com/tflite-nightly/ios/prod/tensorflow/lite/release/ios/nightly/807/20230224-035015/TensorFlowLiteSelectTfOps/0.0.1-nightly.20230224/TensorFlowLiteSelectTfOps-0.0.1-nightly.20230224.tar.gz"
+);
 
 fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").expect("Unable to get TARGET_OS")
@@ -251,72 +83,6 @@ fn copy_or_overwrite<P: AsRef<Path> + Debug, Q: AsRef<Path> + Debug>(src: P, des
     }
 }
 
-fn normalized_target() -> Option<String> {
-    env::var("TARGET")
-        .ok()
-        .map(|t| t.to_uppercase().replace('-', "_"))
-}
-
-/// Looks for the env var `var_${NORMALIZED_TARGET}`, and falls back to just `var` when
-/// it is not found.
-///
-/// `NORMALIZED_TARGET` is the target triple which is converted to uppercase and underscores.
-fn get_target_dependent_env_var(var: &str) -> Option<String> {
-    if let Some(target) = normalized_target() {
-        if let Ok(v) = env::var(format!("{var}_{target}")) {
-            return Some(v);
-        }
-    }
-    env::var(var).ok()
-}
-
-fn test_python_bin(python_bin_path: &str) -> bool {
-    println!("Testing Python at {}", python_bin_path);
-    let success = std::process::Command::new(python_bin_path)
-        .args(["-c", "import numpy, importlib.util"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or_default();
-    if success {
-        println!("Using Python at {}", python_bin_path);
-    }
-    success
-}
-
-fn get_python_bin_path() -> Option<PathBuf> {
-    if let Ok(val) = env::var("PYTHON_BIN_PATH") {
-        if !test_python_bin(&val) {
-            panic!("Given Python binary failed in test!")
-        }
-        Some(PathBuf::from(val))
-    } else {
-        let bin = if target_os() == "windows" {
-            "where"
-        } else {
-            "which"
-        };
-        if let Ok(x) = std::process::Command::new(bin).arg("python3").output() {
-            for path in String::from_utf8(x.stdout).unwrap().lines() {
-                if test_python_bin(path) {
-                    return Some(PathBuf::from(path));
-                }
-                println!("cargo:warning={:?} failed import test", path)
-            }
-        }
-        if let Ok(x) = std::process::Command::new(bin).arg("python").output() {
-            for path in String::from_utf8(x.stdout).unwrap().lines() {
-                if test_python_bin(path) {
-                    return Some(PathBuf::from(path));
-                }
-                println!("cargo:warning={:?} failed import test", path)
-            }
-            None
-        } else {
-            None
-        }
-    }
-}
-
 fn prepare_tensorflow_source(tf_src_path: &Path) {
     let complete_clone_hint_file = tf_src_path.join(".complete_clone");
     if !complete_clone_hint_file.exists() {
@@ -338,73 +104,6 @@ fn prepare_tensorflow_source(tf_src_path: &Path) {
         }
         std::fs::File::create(complete_clone_hint_file).expect("Cannot create clone hint file!");
         println!("Clone took {:?}", Instant::now() - start);
-    }
-
-    let target = tf_src_path.join("tensorflow/lite/c/tmp/BUILD");
-
-    // TODO: Add passing models
-    let builder = BazelBuilder::new(vec![]);
-
-    #[cfg(feature = "flex_delegate")]
-    let builder = builder.with_flex_delegate();
-    #[cfg(feature = "xnnpack")]
-    let builder = builder.with_xnnpack();
-
-    let build_data = builder.build();
-
-    std::fs::create_dir_all(target.parent().unwrap()).expect("Cannot create tmp directory");
-
-    let mut f = File::create(&target).expect(
-        "Failed to create BUILD file"
-    );
-    f.write_all(build_data.as_bytes()).unwrap();
-}
-
-fn check_and_set_envs() {
-    let python_bin_path = get_python_bin_path().expect(
-        "Cannot find Python binary having required packages. \
-        Make sure that `which python3` or `which python` points to a Python3 binary having numpy \
-        installed. Or set PYTHON_BIN_PATH to the path of that binary.",
-    );
-    let os = env::var("CARGO_CFG_TARGET_OS").expect("Unable to get TARGET_OS");
-    let default_envs = [
-        ["PYTHON_BIN_PATH", python_bin_path.to_str().unwrap()],
-        ["USE_DEFAULT_PYTHON_LIB_PATH", "1"],
-        ["TF_NEED_OPENCL", "0"],
-        ["TF_CUDA_CLANG", "0"],
-        ["TF_NEED_TENSORRT", "0"],
-        ["TF_DOWNLOAD_CLANG", "0"],
-        ["TF_NEED_MPI", "0"],
-        ["TF_NEED_ROCM", "0"],
-        ["TF_NEED_CUDA", "0"],
-        ["TF_OVERRIDE_EIGEN_STRONG_INLINE", "1"], // Windows only
-        ["CC_OPT_FLAGS", "-Wno-sign-compare"],
-        [
-            "TF_SET_ANDROID_WORKSPACE",
-            if os == "android" { "1" } else { "0" },
-        ],
-        ["TF_CONFIGURE_IOS", if os == "ios" { "1" } else { "0" }],
-    ];
-    for kv in default_envs {
-        let name = kv[0];
-        let val = kv[1];
-        if env::var(name).is_err() {
-            env::set_var(name, val);
-        }
-    }
-    let true_vals = ["1", "t", "true", "y", "yes"];
-    if true_vals.contains(&env::var("TF_SET_ANDROID_WORKSPACE").unwrap().as_str()) {
-        let android_env_vars = [
-            "ANDROID_NDK_HOME",
-            "ANDROID_NDK_API_LEVEL",
-            "ANDROID_SDK_HOME",
-            "ANDROID_API_LEVEL",
-            "ANDROID_BUILD_TOOLS_VERSION",
-        ];
-        for name in android_env_vars {
-            env::var(name)
-                .unwrap_or_else(|_| panic!("{} should be set to build for Android", name));
-        }
     }
 }
 
@@ -449,188 +148,6 @@ fn flex_output_path() -> PathBuf {
         out_dir().join(get_flex_name())
     } else {
         out_dir().join("TensorFlowLiteSelectTfOps.framework")
-    }
-}
-
-fn build_tensorflow_with_bazel(tf_src_path: &str, config: &str) {
-    let target_os = target_os();
-
-    let mut bazel_lib_output_path_buf;
-    let mut bazel_flex_output_path_buf;
-
-    let bazel_target;
-    let bazel_flex_target;
-
-    if target_os != "ios" {
-        let ext = dll_extension();
-
-        let lib_out_dir = PathBuf::from(tf_src_path)
-            .join("bazel-bin")
-            .join("tensorflow")
-            .join("lite")
-            .join("c")
-            .join("tmp");
-
-        let lib_prefix = dll_prefix();
-
-        bazel_lib_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_jni.{}", lib_prefix, ext));
-        bazel_flex_output_path_buf = lib_out_dir.join(format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext));
-
-        bazel_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_c");
-        bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
-    } else {
-        let lib_out_dir = PathBuf::from(tf_src_path)
-            .join("bazel-bin")
-            .join("tensorflow")
-            .join("lite")
-            .join("c")
-            .join("tmp");
-
-        bazel_lib_output_path_buf = PathBuf::from(tf_src_path)
-            .join("bazel-bin")
-            .join("tensorflow")
-            .join("lite")
-            .join("ios")
-            .join("TensorFlowLiteC_framework.zip");
-
-        bazel_flex_output_path_buf = lib_out_dir.join("libtensorflowlite_flex.dylib");
-
-        bazel_target = String::from("//tensorflow/lite/ios:TensorFlowLiteC_framework");
-        bazel_flex_target = String::from("//tensorflow/lite/c/tmp:tensorflowlite_flex");
-    };
-
-    let python_bin_path = env::var("PYTHON_BIN_PATH").expect("Cannot read PYTHON_BIN_PATH");
-    if !std::process::Command::new(&python_bin_path)
-        .arg("configure.py")
-        .current_dir(tf_src_path)
-        .status()
-        .unwrap_or_else(|_| panic!("Cannot execute python at {}", &python_bin_path))
-        .success()
-    {
-        panic!("Cannot configure tensorflow")
-    }
-    let mut bazel_lib = std::process::Command::new("bazel");
-    let mut bazel_flex = std::process::Command::new("bazel");
-    {
-        // Set bazel outputBase under OUT_DIR
-        let bazel_output_base_path = out_dir().join(format!("tensorflow_{}_output_base", TAG));
-        let out = bazel_output_base_path.to_str().unwrap();
-
-        bazel_lib.arg(format!("--output_base={out}"));
-        bazel_flex.arg(format!("--output_base={out}"));
-    }
-
-    bazel_lib.arg("build").arg("-c").arg("opt");
-
-    bazel_flex.arg("build").arg("-c").arg("opt");
-    bazel_flex.arg("--cxxopt=--std=c++17");
-
-    // Configure XNNPACK flags
-    // In r2.6, it is enabled for some OS such as Windows by default.
-    // To enable it by feature flag, we disable it by default on all platforms.
-    #[cfg(not(feature = "xnnpack"))]
-    bazel_lib.arg("--define").arg("tflite_with_xnnpack=false");
-    #[cfg(any(feature = "xnnpack_qu8", feature = "xnnpack_qs8"))]
-    bazel.arg("--define").arg("tflite_with_xnnpack=true");
-    #[cfg(feature = "xnnpack_qs8")]
-    bazel.arg("--define").arg("xnn_enable_qs8=true");
-    #[cfg(feature = "xnnpack_qu8")]
-    bazel.arg("--define").arg("xnn_enable_qu8=true");
-
-    bazel_lib
-        .arg(format!("--config={}", config))
-        .arg(bazel_target)
-        .current_dir(tf_src_path);
-
-    bazel_flex
-        .arg(format!("--config={}", config))
-        .arg("--config=monolithic")
-        .arg("--host_crosstool_top=@bazel_tools//tools/cpp:toolchain")
-        .arg(bazel_flex_target)
-        .current_dir(tf_src_path);
-
-    if let Some(copts) = get_target_dependent_env_var(BAZEL_COPTS_ENV_VAR) {
-        let copts = copts.split_ascii_whitespace();
-        for opt in copts {
-            bazel_lib.arg(format!("--copt={}", opt));
-        }
-    }
-
-    if target_os == "ios" {
-        bazel_lib.args(["--apple_bitcode=embedded", "--copt=-fembed-bitcode"]);
-    }
-    println!("Bazel Lib Build Command: {:?}", bazel_lib);
-    println!("Bazel Flex Build Command: {:?}", bazel_flex);
-
-    #[cfg(feature = "flex_delegate")]
-    {
-        let mut sed = std::process::Command::new("sed");
-
-        // New versions of compilers do not tolerate the absence of the
-        // required imports, we have to add it manulally
-        let fix_path = PathBuf::from(tf_src_path)
-            .join("tensorflow")
-            .join("tsl")
-            .join("lib")
-            .join("io")
-            .join("cache.h");
-
-        sed.arg("-i").arg("18s/.*/#include <cstdint>/").arg(fix_path.to_str().unwrap());
-
-        if !sed.status().unwrap().success() {
-            panic!("Failed to execute 'sed'");
-        }
-
-        if !bazel_flex.status().expect("Cannot execute bazel").success() {
-            panic!("Cannot build Flex Delegate");
-        }
-    }
-
-    if !bazel_lib.status().expect("Cannot execute bazel").success() {
-        panic!("Cannot build TensorFlowLiteC");
-    }
-
-    if !bazel_lib_output_path_buf.exists() {
-        panic!(
-            "Library/Framework not found in {}",
-            bazel_lib_output_path_buf.display()
-        )
-    }
-
-    let lib_out_path = lib_output_path();
-    let flex_out_path = flex_output_path();
-
-    if target_os != "ios" {
-        copy_or_overwrite(&bazel_lib_output_path_buf, &lib_out_path);
-
-        #[cfg(feature = "flex_delegate")]
-        copy_or_overwrite(&bazel_flex_output_path_buf, &flex_out_path);
-
-        if target_os == "windows" {
-            bazel_lib_output_path_buf.set_extension("dll.if.lib");
-            let winlib_path = out_dir().join("tensorflowlite_c.lib");
-
-            copy_or_overwrite(&bazel_lib_output_path_buf, winlib_path);
-
-            #[cfg(feature = "flex_delegate")] {
-                bazel_flex_output_path_buf.set_extension("dll.if.lib");
-                let winlib_path = out_dir().join("tensorflowlite_flex.lib");
-
-                copy_or_overwrite(&bazel_flex_output_path_buf, winlib_path);
-            }
-        }
-    } else {
-        // if lib_output_path.exists() {
-        //     std::fs::remove_dir_all(lib_output_path).unwrap();
-        // }
-        // let mut unzip = std::process::Command::new("unzip");
-        // unzip.args([
-        //     "-q",
-        //     bazel_lib_output_path_buf.to_str().unwrap(),
-        //     "-d",
-        //     out_dir().to_str().unwrap(),
-        // ]);
-        // unzip.status().expect("Cannot execute unzip");
     }
 }
 
@@ -692,47 +209,77 @@ fn generate_bindings(tf_src_path: PathBuf) {
         .expect("Couldn't write bindings!");
 }
 
-fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path) {
+fn download_ios(save_path: &Path) {
+}
+
+fn download_android(
+    url: &str,
+    save_path: &Path,
+    filename: &str,
+) {
+    std::fs::create_dir_all(&save_path).unwrap();
+    let aar_path = save_path.join("android_lib");
+
+    println!("Starting to download {}...", filename);
+    let start = Instant::now();
+    download_file(url, &aar_path);
+    println!(
+        "Finished downloading {}, took: {:?}",
+        filename,
+        Instant::now() - start,
+    );
+
+    let file = fs::File::open(aar_path).unwrap();
+
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
+    let arch = match arch.as_str() {
+        "aarch64" => "arm64-v8a".to_string(),
+        "armv7" => "armeabi-v7a".to_string(), 
+        "x86" => arch,
+        "x86_64" => arch,
+        _ => panic!("'{}' not supported", arch),
+    };
+
+    let mut archive = zip::ZipArchive::new(file).unwrap();
+    let archive_file_path = format!("jni/{}/{}", arch, filename);
+
+    let mut archive_file = archive.by_name(&archive_file_path).expect(
+        "No file found in the AAR"
+    );
+    let mut buff: Vec<u8> = vec![];
+    archive_file.read_to_end(&mut buff).unwrap();
+
+    let file_path = save_path.join(filename);
+    let mut file = fs::File::create(&file_path).unwrap();
+    file.write_all(&buff).unwrap();
+}
+
+fn download_and_install(tf_src_path: &Path) {
     // Copy prebuilt libraries to given path
     {
-        let prebuilt_tflitec_path = PathBuf::from(prebuilt_tflitec_path);
-        // Copy .{so,dylib,dll,Framework} file
+        let libname = get_lib_name();
+        let save_path = tf_src_path.join("pkgs");
 
-        let mut lib_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_lib_name());
-        let mut lib_output_path = lib_output_path();
+        download_android(ANDROID_BIN_DOWNLOAD_URL, &save_path, &libname);
+
+        let lib_src_path = PathBuf::from(&save_path).join(&libname);
+        let lib_output_path = lib_output_path();
 
         copy_or_overwrite(&lib_src_path, &lib_output_path);
 
         #[cfg(feature = "flex_delegate")] {
-            let mut flex_src_path = PathBuf::from(&prebuilt_tflitec_path).join(get_flex_name());
-            let mut flex_output_path = flex_output_path();
+            let flexname = get_flex_name();
+
+            download_android(ANDROID_BIN_FLEX_DOWNLOAD_URL, &save_path, &flexname);
+
+            let flex_src_path = PathBuf::from(&save_path).join(&flexname);
+            let flex_output_path = flex_output_path();
 
             copy_or_overwrite(&flex_src_path, &flex_output_path);
-
-            if target_os() == "windows" {
-                flex_src_path.set_extension("lib");
-                if !lib_src_path.exists() {
-                    panic!("A prebuilt windows .dll file must have the corresponding .lib file under the same directory!")
-                }
-
-                flex_output_path.set_extension("lib");
-                copy_or_overwrite(flex_src_path, flex_output_path);
-            }
-        }
-
-        if target_os() == "windows" {
-            // Copy .lib file
-            lib_src_path.set_extension("lib");
-            if !lib_src_path.exists() {
-                panic!("A prebuilt windows .dll file must have the corresponding .lib file under the same directory!")
-            }
-
-            lib_output_path.set_extension("lib");
-            copy_or_overwrite(lib_src_path, lib_output_path);
         }
     }
 
-    copy_or_download_headers(
+    download_headers(
         tf_src_path,
         &[
             "tensorflow/lite/c/c_api.h",
@@ -740,7 +287,7 @@ fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path) {
         ],
     );
     if cfg!(feature = "xnnpack") {
-        copy_or_download_headers(
+        download_headers(
             tf_src_path,
             &[
                 "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h",
@@ -750,35 +297,15 @@ fn install_prebuilt(prebuilt_tflitec_path: &str, tf_src_path: &Path) {
     }
 }
 
-fn copy_or_download_headers(tf_src_path: &Path, file_paths: &[&str]) {
-    if let Some(header_src_dir) = get_target_dependent_env_var(HEADER_DIR_ENV_VAR) {
-        copy_headers(Path::new(&header_src_dir), tf_src_path, file_paths)
-    } else {
-        download_headers(tf_src_path, file_paths)
-    }
-}
-
-fn copy_headers(header_src_dir: &Path, tf_src_path: &Path, file_paths: &[&str]) {
-    // Download header files from Github
-    for file_path in file_paths {
-        let dst_path = tf_src_path.join(file_path);
-        if dst_path.exists() {
-            continue;
-        }
-        if let Some(p) = dst_path.parent() {
-            std::fs::create_dir_all(p).expect("Cannot generate header dir");
-        }
-        copy_or_overwrite(header_src_dir.join(file_path), dst_path);
-    }
-}
-
 fn download_headers(tf_src_path: &Path, file_paths: &[&str]) {
     // Download header files from Github
     for file_path in file_paths {
         let download_path = tf_src_path.join(file_path);
+
         if download_path.exists() {
             continue;
         }
+
         if let Some(p) = download_path.parent() {
             std::fs::create_dir_all(p).expect("Cannot generate header dir");
         }
@@ -804,38 +331,13 @@ fn download_file(url: &str, path: &Path) {
 }
 
 fn main() {
-    {
-        let env_vars = [
-            BAZEL_COPTS_ENV_VAR,
-            PREBUILT_PATH_ENV_VAR,
-            HEADER_DIR_ENV_VAR,
-        ];
-        for env_var in env_vars {
-            println!("cargo:rerun-if-env-changed={env_var}");
-            if let Some(target) = normalized_target() {
-                println!("cargo:rerun-if-env-changed={env_var}_{target}");
-            }
-        }
-    }
-
     let out_path = out_dir();
     let os = target_os();
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
-    let arch = match arch.as_str() {
-        "aarch64" => String::from("arm64"),
-        "armv7" => {
-            if os == "android" {
-                String::from("arm")
-            } else {
-                arch
-            }
-        }
-        _ => arch,
-    };
+
     match os.as_str() {
         "android" => {
             println!("cargo:rustc-link-search=native={}", out_path.display());
-            println!("cargo:rustc-link-search=dylib=tensorflowlite_jni");
+            println!("cargo:rustc-link-lib=dylib=tensorflowlite_jni");
 
             #[cfg(feature = "flex_delegate")]
             println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex_jni");
@@ -848,11 +350,12 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=TensorFlowLiteSelectTfOps");
         }
         _ => {
-            println!("cargo:rustc-link-search=native={}", out_path.display());
-            println!("cargo:rustc-link-search=dylib=tensorflowlite_c");
+            panic!("Only iOS and Android are supported for now");
+            // println!("cargo:rustc-link-search=native={}", out_path.display());
+            // println!("cargo:rustc-link-lib=dylib=tensorflowlite_c");
 
-            #[cfg(feature = "flex_delegate")]
-            println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex");
+            // #[cfg(feature = "flex_delegate")]
+            // println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex");
         }
     }
 
@@ -861,24 +364,9 @@ fn main() {
         prepare_for_docsrs();
     } else {
         let tf_src_path = out_path.join(format!("tensorflow_{}", TAG));
-        prepare_tensorflow_source(tf_src_path.as_path());
 
-        // TODO: Implement autodownload of already prebuilt packages
-        if let Some(prebuilt_tflitec_path) = get_target_dependent_env_var(PREBUILT_PATH_ENV_VAR) {
-            install_prebuilt(&prebuilt_tflitec_path, &tf_src_path);
-        } else {
-            // Build from source
-            check_and_set_envs();
-            let config = if os == "android" || os == "ios" || (os == "macos" && arch == "arm64") {
-                format!("{}_{}", os, arch)
-            } else {
-                os
-            };
-            // build_tensorflow_with_bazel(
-            //     tf_src_path.to_str().unwrap(),
-            //     &config,
-            // );
-        }
+        prepare_tensorflow_source(tf_src_path.as_path());
+        download_and_install(&tf_src_path);
 
         // Generate bindings using headers
         generate_bindings(tf_src_path);
