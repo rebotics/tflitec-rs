@@ -22,6 +22,8 @@ curl = "0.4"
 indoc = "2"
 const_format = "0.2.32"
 zip = "0.6"
+tar = "0.4.40"
+flate2 = "1.0.28"
 
 [features]
 default = ["flex_delegate"]

@@ -7,6 +7,7 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+use flate2::read::GzDecoder;
 
 use const_format::formatcp;
 
@@ -115,6 +116,9 @@ fn get_lib_name() -> String {
         "android" => {
             format!("{}tensorflowlite_jni.{}", lib_prefix, ext)
         },
+        "ios" => {
+            String::from("TensorFlowLiteC.framework")
+        },
         _ => {
             format!("{}tensorflowlite_c.{}", lib_prefix, ext)
         }
@@ -129,6 +133,9 @@ fn get_flex_name() -> String {
         "android" => {
             format!("{}tensorflowlite_flex_jni.{}", lib_prefix, ext)
         },
+        "ios" => {
+            String::from("TensorFlowLiteSelectTfOps.framework")
+        }
         _ => {
             format!("{}tensorflowlite_flex.{}", lib_prefix, ext)
         }
@@ -136,19 +143,11 @@ fn get_flex_name() -> String {
 }
 
 fn lib_output_path() -> PathBuf {
-    if target_os() != "ios" {
-        out_dir().join(get_lib_name())
-    } else {
-        out_dir().join("TensorFlowLiteC.framework")
-    }
+    out_dir().join(get_lib_name())
 }
 
 fn flex_output_path() -> PathBuf {
-    if target_os() != "ios" {
-        out_dir().join(get_flex_name())
-    } else {
-        out_dir().join("TensorFlowLiteSelectTfOps.framework")
-    }
+    out_dir().join(get_flex_name())
 }
 
 fn out_dir() -> PathBuf {
@@ -209,7 +208,47 @@ fn generate_bindings(tf_src_path: PathBuf) {
         .expect("Couldn't write bindings!");
 }
 
-fn download_ios(save_path: &Path) {
+fn download_ios(
+    url: &str,
+    save_path: &Path,
+    filename: &str,
+) {
+    std::fs::create_dir_all(&save_path).unwrap();
+    let archive_path = save_path.join("TensorFlowLiteC.tar.gz");
+
+    println!("Starting to download archive with {}...", filename);
+    let start = Instant::now();
+    download_file(url, &archive_path);
+    println!(
+        "Finished downloading archive with {}, took: {:?}",
+        filename,
+        Instant::now() - start,
+    );
+
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
+    let arch = match arch.as_str() {
+        "aarch64" => "ios-arm64".to_string(),
+        _ => panic!("'{}' not supported", arch),
+    };
+
+    let file = fs::File::open(archive_path).unwrap();
+    let decompressed = GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decompressed);
+
+    let framework_name = filename.split(".").nth(0).unwrap();
+    let arhive_filepath = format!(
+        "Frameworks/{framework_name}.xcframework/{arch}/{filename}/"
+    );
+
+    for entry in archive.entries().unwrap() {
+        let mut file = entry.unwrap();
+        let file_path = file.path().unwrap();
+
+        if file_path.ends_with(&arhive_filepath) {
+            file.unpack(save_path.join(filename)).unwrap();
+            break;
+        }
+    }
 }
 
 fn download_android(
@@ -220,11 +259,11 @@ fn download_android(
     std::fs::create_dir_all(&save_path).unwrap();
     let aar_path = save_path.join("android_lib");
 
-    println!("Starting to download {}...", filename);
+    println!("Starting to download archive with {}...", filename);
     let start = Instant::now();
     download_file(url, &aar_path);
     println!(
-        "Finished downloading {}, took: {:?}",
+        "Finished downloading archive with {}, took: {:?}",
         filename,
         Instant::now() - start,
     );
@@ -258,9 +297,25 @@ fn download_and_install(tf_src_path: &Path) {
     // Copy prebuilt libraries to given path
     {
         let libname = get_lib_name();
+        let flexname = get_flex_name();
+
         let save_path = tf_src_path.join("pkgs");
 
-        download_android(ANDROID_BIN_DOWNLOAD_URL, &save_path, &libname);
+        match target_os().as_str() {
+            "android" => {
+                download_android(ANDROID_BIN_DOWNLOAD_URL, &save_path, &libname);
+                #[cfg(feature = "flex_delegate")]
+                download_android(ANDROID_BIN_FLEX_DOWNLOAD_URL, &save_path, &flexname);
+            },
+            "ios" => {
+                download_ios(IOS_BIN_DOWNLOAD_URL, &save_path, &libname);
+                #[cfg(feature = "flex_delegate")]
+                download_ios(IOS_BIN_FLEX_DOWNLOAD_URL, &save_path, &flexname);
+            },
+            _ => {
+                panic!("Only iOS and Android are supported for now");
+            }
+        };
 
         let lib_src_path = PathBuf::from(&save_path).join(&libname);
         let lib_output_path = lib_output_path();
@@ -268,10 +323,6 @@ fn download_and_install(tf_src_path: &Path) {
         copy_or_overwrite(&lib_src_path, &lib_output_path);
 
         #[cfg(feature = "flex_delegate")] {
-            let flexname = get_flex_name();
-
-            download_android(ANDROID_BIN_FLEX_DOWNLOAD_URL, &save_path, &flexname);
-
             let flex_src_path = PathBuf::from(&save_path).join(&flexname);
             let flex_output_path = flex_output_path();
 
@@ -319,7 +370,9 @@ fn download_headers(tf_src_path: &Path, file_paths: &[&str]) {
 
 fn download_file(url: &str, path: &Path) {
     let mut easy = curl::easy::Easy::new();
+    dbg!(&path);
     let output_file = std::fs::File::create(path).unwrap();
+    dbg!(&output_file);
     let mut writer = std::io::BufWriter::new(output_file);
     easy.url(url).unwrap();
     easy.write_function(move |data| Ok(writer.write(data).unwrap()))
