@@ -176,6 +176,40 @@ fn prepare_for_docsrs() {
     }
 }
 
+fn generate_binding_ios() {
+    let mut builder = bindgen::Builder::default();
+
+    let headers_path = out_dir().join("TensorFlowLiteC.framework/Headers");
+    let header_path = headers_path.join("c_api.h");
+
+    builder = builder.header(
+        header_path.to_str().unwrap()
+    );
+
+    if cfg!(feature = "xnnpack") {
+        let header_path = headers_path.join("xnnpack_delegate.h");
+
+        builder = builder.header(
+            header_path.to_str().unwrap()
+        );
+    }
+
+    let bindings = builder
+        .clang_arg(format!("-I{}", headers_path.to_str().unwrap()))
+        // Tell cargo to invalidate the built crate whenever any of the
+        // included header files changed.
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        // Finish the builder and generate the bindings.
+        .generate()
+        // Unwrap the Result and panic on failure.
+        .expect("Unable to generate bindings");
+
+    // Write the bindings to the $OUT_DIR/bindings.rs file.
+    bindings
+        .write_to_file(out_dir().join("bindings.rs"))
+        .expect("Couldn't write bindings!");
+}
+
 fn generate_bindings(tf_src_path: PathBuf) {
     let mut builder = bindgen::Builder::default().header(
         tf_src_path
@@ -214,7 +248,9 @@ fn download_ios(
     filename: &str,
 ) {
     std::fs::create_dir_all(&save_path).unwrap();
-    let archive_path = save_path.join("TensorFlowLiteC.tar.gz");
+
+    let framework_name = filename.split(".").nth(0).unwrap();
+    let archive_path = save_path.join(format!("{framework_name}.tar.gz"));
 
     println!("Starting to download archive with {}...", filename);
     let start = Instant::now();
@@ -228,6 +264,7 @@ fn download_ios(
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
     let arch = match arch.as_str() {
         "aarch64" => "ios-arm64".to_string(),
+        "arm" => "ios-arm64".to_string(),
         _ => panic!("'{}' not supported", arch),
     };
 
@@ -235,20 +272,23 @@ fn download_ios(
     let decompressed = GzDecoder::new(file);
     let mut archive = tar::Archive::new(decompressed);
 
-    let framework_name = filename.split(".").nth(0).unwrap();
     let arhive_filepath = format!(
         "Frameworks/{framework_name}.xcframework/{arch}/{filename}/"
     );
 
-    for entry in archive.entries().unwrap() {
+    archive.entries().unwrap().for_each(|entry| {
         let mut file = entry.unwrap();
-        let file_path = file.path().unwrap();
 
-        if file_path.ends_with(&arhive_filepath) {
-            file.unpack(save_path.join(filename)).unwrap();
-            break;
+        let file_path = file.path().unwrap();
+        let file_path = file_path.to_str().unwrap();
+
+        if file_path.contains(&arhive_filepath) {
+        dbg!(file_path);
+            let file_path = file_path.split("/").skip(4).collect::<Vec<_>>().join("/");
+
+            file.unpack(save_path.join(file_path)).unwrap();
         }
-    }
+    });
 }
 
 fn download_android(
@@ -398,6 +438,7 @@ fn main() {
         "ios" => {
             println!("cargo:rustc-link-search=framework={}", out_path.display());
             println!("cargo:rustc-link-lib=framework=TensorFlowLiteC");
+            println!("cargo:rustc-link-lib=c++");
 
             #[cfg(feature = "flex_delegate")]
             println!("cargo:rustc-link-lib=framework=TensorFlowLiteSelectTfOps");
@@ -422,6 +463,11 @@ fn main() {
         download_and_install(&tf_src_path);
 
         // Generate bindings using headers
-        generate_bindings(tf_src_path);
+        generate_binding_ios();
+        //if os != "ios" {
+        //    generate_bindings(tf_src_path);
+        //} else {
+        //    generate_binding_ios();
+        //}
     }
 }

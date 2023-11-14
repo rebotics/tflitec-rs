@@ -30,6 +30,14 @@ extern "C" {
     );
 }
 
+/// Looks like iOS version was built against Swift Toolchain or something like
+/// that but the point is that we're missing this symbol.
+/// As a workaround we define it in Rust
+#[no_mangle]
+pub extern "C" fn __isPlatformVersionAtLeast() -> bool {
+    true
+}
+
 
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
@@ -429,12 +437,20 @@ impl Drop for Interpreter<'_> {
 
             #[cfg(feature = "flex_delegate")]
             {
-                if let Some(delegate_ptr) = self.flex_delegate_ptr {
-                    Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
-                        std::ptr::null_mut(),
-                        std::ptr::null_mut(),
-                        delegate_ptr,
-                    );
+                #[cfg(target_os = "android")]
+                {
+                    if let Some(delegate_ptr) = self.flex_delegate_ptr {
+                        Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+                            std::ptr::null_mut(),
+                            std::ptr::null_mut(),
+                            delegate_ptr,
+                        );
+                    }
+                }
+
+                #[cfg(target_os = "ios")]
+                {
+
                 }
             }
         }
