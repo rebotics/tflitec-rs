@@ -264,7 +264,6 @@ fn download_ios(
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
     let arch = match arch.as_str() {
         "aarch64" => "ios-arm64".to_string(),
-        "arm" => "ios-arm64".to_string(),
         _ => panic!("'{}' not supported", arch),
     };
 
@@ -283,7 +282,6 @@ fn download_ios(
         let file_path = file_path.to_str().unwrap();
 
         if file_path.contains(&arhive_filepath) {
-        dbg!(file_path);
             let file_path = file_path.split("/").skip(4).collect::<Vec<_>>().join("/");
 
             file.unpack(save_path.join(file_path)).unwrap();
@@ -369,50 +367,11 @@ fn download_and_install(tf_src_path: &Path) {
             copy_or_overwrite(&flex_src_path, &flex_output_path);
         }
     }
-
-    download_headers(
-        tf_src_path,
-        &[
-            "tensorflow/lite/c/c_api.h",
-            "tensorflow/lite/c/c_api_types.h",
-        ],
-    );
-    if cfg!(feature = "xnnpack") {
-        download_headers(
-            tf_src_path,
-            &[
-                "tensorflow/lite/delegates/xnnpack/xnnpack_delegate.h",
-                "tensorflow/lite/c/common.h",
-            ],
-        );
-    }
-}
-
-fn download_headers(tf_src_path: &Path, file_paths: &[&str]) {
-    // Download header files from Github
-    for file_path in file_paths {
-        let download_path = tf_src_path.join(file_path);
-
-        if download_path.exists() {
-            continue;
-        }
-
-        if let Some(p) = download_path.parent() {
-            std::fs::create_dir_all(p).expect("Cannot generate header dir");
-        }
-        let url = format!(
-            "https://raw.githubusercontent.com/tensorflow/tensorflow/{}/{}",
-            TAG, file_path
-        );
-        download_file(&url, download_path.as_path());
-    }
 }
 
 fn download_file(url: &str, path: &Path) {
     let mut easy = curl::easy::Easy::new();
-    dbg!(&path);
     let output_file = std::fs::File::create(path).unwrap();
-    dbg!(&output_file);
     let mut writer = std::io::BufWriter::new(output_file);
     easy.url(url).unwrap();
     easy.write_function(move |data| Ok(writer.write(data).unwrap()))
@@ -459,15 +418,15 @@ fn main() {
     } else {
         let tf_src_path = out_path.join(format!("tensorflow_{}", TAG));
 
-        prepare_tensorflow_source(tf_src_path.as_path());
-        download_and_install(&tf_src_path);
+        if os != "ios" {
+            prepare_tensorflow_source(tf_src_path.as_path());
+            download_and_install(&tf_src_path);
 
-        // Generate bindings using headers
-        generate_binding_ios();
-        //if os != "ios" {
-        //    generate_bindings(tf_src_path);
-        //} else {
-        //    generate_binding_ios();
-        //}
+            generate_bindings(tf_src_path);
+        } else {
+            download_and_install(&tf_src_path);
+
+            generate_binding_ios();
+        }
     }
 }

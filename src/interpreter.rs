@@ -33,9 +33,16 @@ extern "C" {
 /// Looks like iOS version was built against Swift Toolchain or something like
 /// that but the point is that we're missing this symbol.
 /// As a workaround we define it in Rust
+#[cfg(target_os = "ios")]
 #[no_mangle]
 pub extern "C" fn __isPlatformVersionAtLeast() -> bool {
     true
+}
+
+#[cfg(target_os = "ios")]
+#[link(name="TensorFlowLiteSelectTfOps", kind="framework")]
+extern "C" {
+    fn TF_AcquireFlexDelegate() -> *mut TfLiteDelegate;
 }
 
 
@@ -98,6 +105,7 @@ pub struct Interpreter<'a> {
 
     /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
     #[cfg(feature = "flex_delegate")]
+    #[allow(dead_code)]
     flex_delegate_ptr: Option<*mut TfLiteDelegate>,
 
     /// The underlying `Model` to limit lifetime of the interpreter.
@@ -405,6 +413,7 @@ impl<'a> Interpreter<'a> {
     unsafe fn create_flex_delegate(
         interpreter_options_ptr: *mut TfLiteInterpreterOptions,
     ) -> *mut TfLiteDelegate {
+        #[allow(unused_assignments)]
         let mut delegate: Option<*mut TfLiteDelegate> = None;
 
         #[cfg(target_os = "android")]
@@ -413,6 +422,11 @@ impl<'a> Interpreter<'a> {
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
             ));
+        }
+
+        #[cfg(target_os = "ios")]
+        {
+            delegate = Some(TF_AcquireFlexDelegate())
         }
 
         let delegate = delegate.expect("Your platform is not supported");
@@ -448,10 +462,9 @@ impl Drop for Interpreter<'_> {
                     }
                 }
 
-                #[cfg(target_os = "ios")]
-                {
-
-                }
+                // For iOS / CAPI I did not find any exposed methods to deallocate the Delegate.
+                // For now I will leave it as it is but this should be investigated further
+                //#[cfg(target_os = "ios")] {}
             }
         }
     }
