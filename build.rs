@@ -28,9 +28,6 @@ const ANDROID_BIN_FLEX_DOWNLOAD_URL: &str = formatcp!(
 const IOS_BIN_DOWNLOAD_URL: &str = formatcp!(
     "https://dl.google.com/tflite-nightly/ios/prod/tensorflow/lite/release/ios/nightly/807/20230224-035015/TensorFlowLiteC/0.0.1-nightly.20230224/TensorFlowLiteC-0.0.1-nightly.20230224.tar.gz"
 );
-const IOS_BIN_FLEX_DOWNLOAD_URL: &str = formatcp!(
-    "https://dl.google.com/tflite-nightly/ios/prod/tensorflow/lite/release/ios/nightly/807/20230224-035015/TensorFlowLiteSelectTfOps/0.0.1-nightly.20230224/TensorFlowLiteSelectTfOps-0.0.1-nightly.20230224.tar.gz"
-);
 
 fn target_os() -> String {
     env::var("CARGO_CFG_TARGET_OS").expect("Unable to get TARGET_OS")
@@ -347,8 +344,6 @@ fn download_and_install(tf_src_path: &Path) {
             },
             "ios" => {
                 download_ios(IOS_BIN_DOWNLOAD_URL, &save_path, &libname);
-                #[cfg(feature = "flex_delegate")]
-                download_ios(IOS_BIN_FLEX_DOWNLOAD_URL, &save_path, &flexname);
             },
             _ => {
                 panic!("Only iOS and Android are supported for now");
@@ -390,17 +385,11 @@ fn main() {
         "android" => {
             println!("cargo:rustc-link-search=native={}", out_path.display());
             println!("cargo:rustc-link-lib=dylib=tensorflowlite_jni");
-
-            #[cfg(feature = "flex_delegate")]
-            println!("cargo:rustc-link-lib=dylib=tensorflowlite_flex_jni");
         }
         "ios" => {
             println!("cargo:rustc-link-search=framework={}", out_path.display());
             println!("cargo:rustc-link-lib=framework=TensorFlowLiteC");
             println!("cargo:rustc-link-lib=c++");
-
-            #[cfg(feature = "flex_delegate")]
-            println!("cargo:rustc-link-lib=framework=TensorFlowLiteSelectTfOps");
         }
         _ => {
             panic!("Only iOS and Android are supported for now");

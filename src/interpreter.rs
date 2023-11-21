@@ -30,22 +30,6 @@ extern "C" {
     );
 }
 
-/// Looks like iOS version was built against Swift Toolchain or something like
-/// that but the point is that we're missing this symbol.
-/// As a workaround we define it in Rust
-#[cfg(target_os = "ios")]
-#[no_mangle]
-pub extern "C" fn __isPlatformVersionAtLeast() -> bool {
-    true
-}
-
-#[cfg(target_os = "ios")]
-#[link(name="TensorFlowLiteSelectTfOps", kind="framework")]
-extern "C" {
-    fn TF_AcquireFlexDelegate() -> *mut TfLiteDelegate;
-}
-
-
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
 pub struct Options {
@@ -104,6 +88,7 @@ pub struct Interpreter<'a> {
     xnnpack_delegate_ptr: Option<*mut TfLiteDelegate>,
 
     /// The underlying [`TfLiteDelegate`] C pointer for XNNPACK delegate.
+    #[cfg(target_os = "android")]
     #[cfg(feature = "flex_delegate")]
     #[allow(dead_code)]
     flex_delegate_ptr: Option<*mut TfLiteDelegate>,
@@ -167,8 +152,9 @@ impl<'a> Interpreter<'a> {
                 }
             }
 
+            #[cfg(target_os = "android")]
             #[cfg(feature = "flex_delegate")]
-            let flex_delegate_ptr = Some(Interpreter::create_flex_delegate(options_ptr));
+            let flex_delegate_ptr = Some(Interpreter::create_flex_delegate_android(options_ptr));
 
             // TODO(ebraraktas): TfLiteInterpreterOptionsSetErrorReporter
             let model_ptr = model.model_ptr as *const TfLiteModel;
@@ -182,6 +168,7 @@ impl<'a> Interpreter<'a> {
                     interpreter_ptr,
                     #[cfg(feature = "xnnpack")]
                     xnnpack_delegate_ptr,
+                    #[cfg(target_os = "android")]
                     #[cfg(feature = "flex_delegate")]
                     flex_delegate_ptr,
                     model,
@@ -409,27 +396,16 @@ impl<'a> Interpreter<'a> {
         xnnpack_delegate_ptr
     }
 
+    #[cfg(target_os = "android")]
     #[cfg(feature = "flex_delegate")]
-    unsafe fn create_flex_delegate(
+    unsafe fn create_flex_delegate_android(
         interpreter_options_ptr: *mut TfLiteInterpreterOptions,
     ) -> *mut TfLiteDelegate {
         #[allow(unused_assignments)]
-        let mut delegate: Option<*mut TfLiteDelegate> = None;
-
-        #[cfg(target_os = "android")]
-        {
-            delegate = Some(Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ));
-        }
-
-        #[cfg(target_os = "ios")]
-        {
-            delegate = Some(TF_AcquireFlexDelegate())
-        }
-
-        let delegate = delegate.expect("Your platform is not supported");
+        let delegate = Java_org_tensorflow_lite_flex_FlexDelegate_nativeCreateDelegate(
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
 
         TfLiteInterpreterOptionsAddDelegate(interpreter_options_ptr, delegate);
 
@@ -449,22 +425,16 @@ impl Drop for Interpreter<'_> {
                 }
             }
 
+            #[cfg(target_os = "android")]
             #[cfg(feature = "flex_delegate")]
             {
-                #[cfg(target_os = "android")]
-                {
-                    if let Some(delegate_ptr) = self.flex_delegate_ptr {
-                        Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
-                            std::ptr::null_mut(),
-                            std::ptr::null_mut(),
-                            delegate_ptr,
-                        );
-                    }
+                if let Some(delegate_ptr) = self.flex_delegate_ptr {
+                    Java_org_tensorflow_lite_flex_FlexDelegate_nativeDeleteDelegate(
+                        std::ptr::null_mut(),
+                        std::ptr::null_mut(),
+                        delegate_ptr,
+                    );
                 }
-
-                // For iOS / CAPI I did not find any exposed methods to deallocate the Delegate.
-                // For now I will leave it as it is but this should be investigated further
-                //#[cfg(target_os = "ios")] {}
             }
         }
     }
