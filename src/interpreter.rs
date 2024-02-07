@@ -30,6 +30,11 @@ extern "C" {
     );
 }
 
+// Provide stub for iOS
+#[cfg(target_os = "ios")]
+#[no_mangle]
+pub extern "C" fn __isPlatformVersionAtLeast() -> bool { true }
+
 /// Options for configuring the [`Interpreter`].
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Hash, Ord, PartialOrd)]
 pub struct Options {
