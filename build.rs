@@ -355,7 +355,7 @@ fn download_and_install(tf_src_path: &Path) {
 
         copy_or_overwrite(&lib_src_path, &lib_output_path);
 
-        #[cfg(feature = "flex_delegate")] {
+        #[cfg(all(android, feature = "flex_delegate"))] {
             let flex_src_path = PathBuf::from(&save_path).join(&flexname);
             let flex_output_path = flex_output_path();
 
