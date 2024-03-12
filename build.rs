@@ -308,7 +308,7 @@ fn download_android(
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("Unable to get TARGET_ARCH");
     let arch = match arch.as_str() {
         "aarch64" => "arm64-v8a".to_string(),
-        "armv7" => "armeabi-v7a".to_string(), 
+        "armv7" | "arm" => "armeabi-v7a".to_string(), 
         "x86" => arch,
         "x86_64" => arch,
         _ => panic!("'{}' not supported", arch),
