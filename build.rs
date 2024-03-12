@@ -143,10 +143,6 @@ fn lib_output_path() -> PathBuf {
     out_dir().join(get_lib_name())
 }
 
-fn flex_output_path() -> PathBuf {
-    out_dir().join(get_flex_name())
-}
-
 fn out_dir() -> PathBuf {
     PathBuf::from(env::var("OUT_DIR").unwrap())
 }
@@ -244,9 +240,9 @@ fn download_ios(
     save_path: &Path,
     filename: &str,
 ) {
-    std::fs::create_dir_all(&save_path).unwrap();
+    std::fs::create_dir_all(save_path).unwrap();
 
-    let framework_name = filename.split(".").nth(0).unwrap();
+    let framework_name = filename.split('.').next().unwrap();
     let archive_path = save_path.join(format!("{framework_name}.tar.gz"));
 
     println!("Starting to download archive with {}...", filename);
@@ -291,7 +287,7 @@ fn download_android(
     save_path: &Path,
     filename: &str,
 ) {
-    std::fs::create_dir_all(&save_path).unwrap();
+    std::fs::create_dir_all(save_path).unwrap();
     let aar_path = save_path.join("android_lib");
 
     println!("Starting to download archive with {}...", filename);
@@ -353,7 +349,7 @@ fn download_and_install(tf_src_path: &Path) {
         let lib_src_path = PathBuf::from(&save_path).join(&libname);
         let lib_output_path = lib_output_path();
 
-        copy_or_overwrite(&lib_src_path, &lib_output_path);
+        copy_or_overwrite(lib_src_path, lib_output_path);
 
         #[cfg(all(android, feature = "flex_delegate"))] {
             let flex_src_path = PathBuf::from(&save_path).join(&flexname);
