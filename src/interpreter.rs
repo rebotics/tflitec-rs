@@ -184,8 +184,6 @@ impl<'a> Interpreter<'a> {
             {
                 // TFLite uses dlsym() to dinamically load FLEX delegate
                 // we can use dlopen() with global symbols visiblity to load FLEX delegate in runtime
-
-                let flex_delegate_ptr = Some(Interpreter::create_flex_delegate(options_ptr));
                 let lib_name = CString::new("libtensorflowlite_flex.so").unwrap();
 
                 let handle = dlopen(lib_name.as_ptr(), 0x00100 | 0x00001);
