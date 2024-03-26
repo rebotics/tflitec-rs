@@ -174,21 +174,11 @@ impl<'a> Interpreter<'a> {
             #[cfg(feature = "flex_delegate")]
             let flex_delegate_ptr = Some(Interpreter::create_flex_delegate_android(options_ptr));
 
-            #[cfg(
-                all(
-                    not(target_os = "android"),
-                    not(target_os = "windows")
-                )
-            )]
+            #[cfg(target_os = "linux")]
             #[cfg(feature = "flex_delegate")]
             {
                 // TFLite uses dlsym() to dinamically load FLEX delegate
                 // we can use dlopen() with global symbols visiblity to load FLEX delegate in runtime
-
-                #[cfg(target_os = "macos")]
-                let lib_name = CString::new("libtensorflowlite_flex.dylib").unwrap();
-
-                #[cfg(not(target_os = "macos"))]
                 let lib_name = CString::new("libtensorflowlite_flex.so").unwrap();
 
                 let handle = dlopen(lib_name.as_ptr(), 0x00100 | 0x00001);
